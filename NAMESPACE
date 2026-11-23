@@ -2,7 +2,9 @@
 
 export(arda_browse)
 export(arda_cache_dir)
+export(arda_cache_list)
 export(arda_cite)
+export(arda_clear_cache)
 export(arda_codebook)
 export(arda_files)
 export(arda_load)

@@ -603,3 +603,166 @@ arda_browse <- function(arda_id, target = c("arda", "osf")) {
   
   invisible(url)
 }
+
+# Internal helper to format byte counts cleanly
+format_bytes <- function(bytes) {
+  vapply(bytes, function(b) {
+    if (is.na(b) || b < 0) return(NA_character_)
+    if (b < 1024) return(sprintf("%d B", as.integer(b)))
+    if (b < 1024^2) return(sprintf("%.1f KB", b / 1024))
+    if (b < 1024^3) return(sprintf("%.2f MB", b / 1024^2))
+    sprintf("%.2f GB", b / 1024^3)
+  }, character(1))
+}
+
+#' List Cached ARDA Datasets and Catalog Files
+#'
+#' Inspects the local cache directory (`arda_cache_dir()`) and returns a tibble
+#' of all downloaded datasets and catalog files along with their sizes and modification times.
+#'
+#' @param cache_dir Directory to inspect. Defaults to `arda_cache_dir()`.
+#' @param include_catalog Logical; if `TRUE` (default), includes cached crosswalk
+#'   CSV files alongside downloaded dataset files.
+#' @return A tibble with columns `arda_id`, `filename`, `type`, `size_bytes`,
+#'   `size`, `modified`, and `path`.
+#' @export
+arda_cache_list <- function(cache_dir = arda_cache_dir(), include_catalog = TRUE) {
+  if (!dir.exists(cache_dir)) {
+    return(tibble::tibble(
+      arda_id = character(),
+      filename = character(),
+      type = character(),
+      size_bytes = numeric(),
+      size = character(),
+      modified = as.POSIXct(character()),
+      path = character()
+    ))
+  }
+  
+  files <- list.files(cache_dir, full.names = TRUE, recursive = FALSE)
+  files <- files[!dir.exists(files)]
+  
+  if (length(files) == 0) {
+    message("ARDA cache is currently empty: ", cache_dir)
+    return(tibble::tibble(
+      arda_id = character(),
+      filename = character(),
+      type = character(),
+      size_bytes = numeric(),
+      size = character(),
+      modified = as.POSIXct(character()),
+      path = character()
+    ))
+  }
+  
+  fnames <- basename(files)
+  is_cat <- fnames %in% c("ARDA_OSF_file_level_crosswalk.csv", "ARDA_OSF_crosswalk.csv")
+  
+  if (!isTRUE(include_catalog)) {
+    files <- files[!is_cat]
+    fnames <- fnames[!is_cat]
+    is_cat <- is_cat[!is_cat]
+  }
+  
+  if (length(files) == 0) {
+    message("No cached dataset files found in: ", cache_dir)
+    return(tibble::tibble(
+      arda_id = character(),
+      filename = character(),
+      type = character(),
+      size_bytes = numeric(),
+      size = character(),
+      modified = as.POSIXct(character()),
+      path = character()
+    ))
+  }
+  
+  info <- file.info(files)
+  # Extract ARDA_ID prefix before first underscore for dataset files
+  arda_ids <- ifelse(
+    is_cat,
+    NA_character_,
+    sub("_.*$", "", fnames)
+  )
+  
+  res <- tibble::tibble(
+    arda_id = arda_ids,
+    filename = fnames,
+    type = ifelse(is_cat, "catalog", "dataset"),
+    size_bytes = info$size,
+    size = format_bytes(info$size),
+    modified = info$mtime,
+    path = normalizePath(files, mustWork = FALSE)
+  ) |>
+    dplyr::arrange(.data$type, dplyr::desc(.data$modified))
+  
+  total_str <- format_bytes(sum(res$size_bytes, na.rm = TRUE))
+  message(sprintf("ARDA cache (%s): %d file(s), %s total", cache_dir, nrow(res), total_str))
+  res
+}
+
+#' Clear Cached ARDA Dataset Files
+#'
+#' Removes cached dataset files from `arda_cache_dir()`. By default, preserves
+#' any updated catalog CSVs so you do not have to re-download the index.
+#'
+#' @param arda_id Optional character ARDA dataset ID (e.g., `"1979ABC"`) to remove
+#'   only files belonging to that dataset. If `NULL` (default), clears all cached datasets.
+#' @param include_catalog Logical; if `TRUE`, also deletes cached catalog CSV files
+#'   and resets the in-memory catalog cache. Defaults to `FALSE`.
+#' @param cache_dir Directory to clean. Defaults to `arda_cache_dir()`.
+#' @param ask Logical; if `TRUE` (default in interactive sessions), asks for confirmation
+#'   before deleting files.
+#' @return Invisibly returns the number of files deleted.
+#' @export
+arda_clear_cache <- function(arda_id = NULL,
+                             include_catalog = FALSE,
+                             cache_dir = arda_cache_dir(),
+                             ask = interactive()) {
+  if (!dir.exists(cache_dir)) {
+    message("Cache directory does not exist: ", cache_dir)
+    return(invisible(0L))
+  }
+  
+  files <- list.files(cache_dir, full.names = TRUE, recursive = FALSE)
+  files <- files[!dir.exists(files)]
+  fnames <- basename(files)
+  is_cat <- fnames %in% c("ARDA_OSF_file_level_crosswalk.csv", "ARDA_OSF_crosswalk.csv")
+  
+  if (!is.null(arda_id)) {
+    target_prefix <- paste0(toupper(trimws(arda_id)), "_")
+    keep <- startsWith(toupper(fnames), target_prefix) & !is_cat
+    files <- files[keep]
+  } else if (!isTRUE(include_catalog)) {
+    files <- files[!is_cat]
+  }
+  
+  if (length(files) == 0) {
+    message("No matching cached files to remove.")
+    return(invisible(0L))
+  }
+  
+  total_size <- format_bytes(sum(file.info(files)$size, na.rm = TRUE))
+  
+  if (isTRUE(ask) && interactive()) {
+    ans <- readline(sprintf(
+      "Delete %d cached file(s) (%s) from %s? [y/N]: ",
+      length(files), total_size, cache_dir
+    ))
+    if (!tolower(trimws(ans)) %in% c("y", "yes")) {
+      message("Cache clear cancelled.")
+      return(invisible(0L))
+    }
+  }
+  
+  removed <- file.remove(files)
+  n_removed <- sum(removed, na.rm = TRUE)
+  
+  if (isTRUE(include_catalog)) {
+    .arda_env$file_catalog <- NULL
+    .arda_env$project_catalog <- NULL
+  }
+  
+  message(sprintf("Removed %d cached file(s) (%s freed).", n_removed, total_size))
+  invisible(n_removed)
+}
