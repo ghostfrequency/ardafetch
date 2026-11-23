@@ -462,3 +462,144 @@ arda_codebook <- function(df, query = NULL, max_values = 15) {
   
   cb
 }
+
+# Internal helper to retrieve project-level metadata for a single ARDA_ID
+get_dataset_meta <- function(arda_id) {
+  if (missing(arda_id) || is.null(arda_id) || !nzchar(trimws(arda_id))) {
+    stop("Supply a valid `arda_id` (e.g., \"1979ABC\").", call. = FALSE)
+  }
+  
+  target_id <- toupper(trimws(arda_id))
+  proj <- get_project_catalog()
+  meta <- NULL
+  
+  if (!is.null(proj)) {
+    matches <- dplyr::filter(proj, toupper(.data$ARDA_ID) == target_id)
+    if (nrow(matches) > 0) {
+      meta <- matches[1, ]
+    }
+  }
+  
+  # Fallback to file-level catalog if project catalog is absent or lacks this ID
+  if (is.null(meta)) {
+    fcat <- get_file_catalog()
+    fmatches <- dplyr::filter(fcat, toupper(.data$ARDA_ID) == target_id)
+    if (nrow(fmatches) == 0) {
+      stop(sprintf("Dataset '%s' not found in the ARDA catalog.", arda_id), call. = FALSE)
+    }
+    meta <- fmatches[1, ]
+  }
+  
+  title <- as.character(meta$Title[1] %||% target_id)
+  year <- if ("Publication_Year" %in% names(meta) && !is.na(meta$Publication_Year[1])) {
+    as.character(meta$Publication_Year[1])
+  } else {
+    "n.d."
+  }
+  authors <- if ("Authors_Investigators" %in% names(meta) &&
+                 !is.na(meta$Authors_Investigators[1]) &&
+                 nzchar(trimws(as.character(meta$Authors_Investigators[1])))) {
+    trimws(as.character(meta$Authors_Investigators[1]))
+  } else {
+    "Association of Religion Data Archives (ARDA)"
+  }
+  arda_url <- if ("ARDA_URL" %in% names(meta) &&
+                  !is.na(meta$ARDA_URL[1]) &&
+                  nzchar(trimws(as.character(meta$ARDA_URL[1])))) {
+    trimws(as.character(meta$ARDA_URL[1]))
+  } else {
+    paste0("https://www.thearda.com/data-archive?fid=", target_id)
+  }
+  osf_id <- if ("OSF_ID" %in% names(meta) && !is.na(meta$OSF_ID[1])) {
+    as.character(meta$OSF_ID[1])
+  } else if ("OSF_Project_ID" %in% names(meta) && !is.na(meta$OSF_Project_ID[1])) {
+    as.character(meta$OSF_Project_ID[1])
+  } else {
+    NA_character_
+  }
+  
+  list(
+    arda_id = target_id,
+    title = title,
+    year = year,
+    authors = authors,
+    arda_url = arda_url,
+    osf_id = osf_id
+  )
+}
+
+#' Generate a Formatted Citation for an ARDA Dataset
+#'
+#' Looks up bibliographic metadata for an ARDA dataset and prints a formatted
+#' citation in APA, Chicago, or BibTeX style.
+#'
+#' @param arda_id Character ARDA dataset ID (e.g., `"1979ABC"` or `"MORMON"`).
+#' @param style Citation format: `"apa"` (default), `"chicago"`, or `"bibtex"`.
+#' @return Invisibly returns the formatted citation string.
+#' @export
+arda_cite <- function(arda_id, style = c("apa", "chicago", "bibtex")) {
+  style <- match.arg(tolower(style), c("apa", "chicago", "bibtex"))
+  meta <- get_dataset_meta(arda_id)
+  
+  citation_text <- switch(
+    style,
+    "apa" = sprintf(
+      "%s. (%s). %s [Data set]. The Association of Religion Data Archives (ARDA). %s",
+      meta$authors, meta$year, meta$title, meta$arda_url
+    ),
+    "chicago" = sprintf(
+      "%s. %s. \"%s.\" The Association of Religion Data Archives (ARDA). %s.",
+      meta$authors, meta$year, meta$title, meta$arda_url
+    ),
+    "bibtex" = {
+      key <- tolower(gsub("[^a-zA-Z0-9]", "", paste0("arda_", meta$arda_id)))
+      sprintf(
+        paste0(
+          "@misc{%s,\n",
+          "  author       = {%s},\n",
+          "  title        = {{%s}},\n",
+          "  year         = {%s},\n",
+          "  howpublished = {The Association of Religion Data Archives (ARDA)},\n",
+          "  url          = {%s}\n",
+          "}"
+        ),
+        key, meta$authors, meta$title, meta$year, meta$arda_url
+      )
+    }
+  )
+  
+  cat(citation_text, "\n", sep = "")
+  invisible(citation_text)
+}
+
+#' Open an ARDA Dataset's Archive Page in a Web Browser
+#'
+#' Launches the official `thearda.com` archive page (or OSF repository page) for
+#' a given ARDA dataset ID.
+#'
+#' @param arda_id Character ARDA dataset ID (e.g., `"1979ABC"` or `"MORMON"`).
+#' @param target Which page to open: `"arda"` (default, opens `thearda.com`) or
+#'   `"osf"` (opens the underlying Open Science Framework project page).
+#' @return Invisibly returns the URL opened.
+#' @export
+arda_browse <- function(arda_id, target = c("arda", "osf")) {
+  target <- match.arg(tolower(target), c("arda", "osf"))
+  meta <- get_dataset_meta(arda_id)
+  
+  url <- if (target == "osf") {
+    if (is.na(meta$osf_id) || !nzchar(meta$osf_id)) {
+      stop(sprintf("No OSF project ID recorded for dataset '%s'.", meta$arda_id), call. = FALSE)
+    }
+    paste0("https://osf.io/", meta$osf_id, "/")
+  } else {
+    meta$arda_url
+  }
+  
+  if (interactive()) {
+    utils::browseURL(url)
+  } else {
+    message("Non-interactive session; dataset URL: ", url)
+  }
+  
+  invisible(url)
+}
