@@ -23,6 +23,31 @@ validate_file_catalog <- function(cat_df) {
   invisible(cat_df)
 }
 
+# Internal helper to standardize column names to deterministic lowercase snake_case
+clean_df_names <- function(df) {
+  if (!is.data.frame(df) || ncol(df) == 0) {
+    return(df)
+  }
+  
+  nms <- names(df)
+  # Transliterate accented characters to ASCII when possible
+  nms_ascii <- suppressWarnings(iconv(nms, to = "ASCII//TRANSLIT"))
+  nms <- ifelse(is.na(nms_ascii), nms, nms_ascii)
+  # Split camelCase / PascalCase boundaries (e.g., "ReligTrad" -> "Relig_Trad")
+  nms <- gsub("([a-z0-9])([A-Z])", "\\1_\\2", nms)
+  nms <- tolower(nms)
+  # Replace any non-alphanumeric characters with underscores
+  nms <- gsub("[^a-z0-9]+", "_", nms)
+  # Trim leading/trailing underscores
+  nms <- gsub("^_+|_+$", "", nms)
+  # Prefix names that are empty or start with a digit so they are valid R identifiers
+  nms[!nzchar(nms)] <- "x"
+  nms <- ifelse(grepl("^[0-9]", nms), paste0("x_", nms), nms)
+  # Ensure uniqueness (e.g., "var", "var_2")
+  names(df) <- make.unique(nms, sep = "_")
+  df
+}
+
 #' Get or Set the Local Cache Directory for ARDA Datasets
 #'
 #' @param path Optional character path to override the default cache directory.
@@ -162,7 +187,7 @@ arda_search <- function(query = NULL, year = NULL, max_results = 25) {
     proj <- get_file_catalog() |>
       dplyr::distinct(.data$ARDA_ID, .data$OSF_Project_ID, .data$Title, .data$Publication_Year)
   }
-
+  
   res <- proj
   if (!is.null(year)) {
     res <- dplyr::filter(res, .data$Publication_Year %in% year)
@@ -179,7 +204,7 @@ arda_search <- function(query = NULL, year = NULL, max_results = 25) {
         (if (has_au) stringr::str_detect(dplyr::coalesce(.data$Authors_Investigators, ""), rx) else FALSE)
     )
   }
-
+  
   cols <- intersect(
     c("ARDA_ID", "Title", "Publication_Year", "Authors_Investigators", "Keywords", "OSF_ID", "ARDA_URL"),
     names(res)
@@ -200,12 +225,12 @@ arda_files <- function(arda_id, ext = NULL) {
   res <- cat_df |>
     dplyr::filter(toupper(.data$ARDA_ID) == toupper(arda_id)) |>
     dplyr::mutate(Extension = tolower(tools::file_ext(.data$Original_Filename)))
-
+  
   if (!is.null(ext) && nzchar(ext)) {
     clean_ext <- tolower(sub("^\\.", "", ext))
     res <- dplyr::filter(res, .data$Extension == clean_ext)
   }
-
+  
   res |>
     dplyr::select(
       "ARDA_ID", "File_GUID", "Original_Filename", "Standardized_Filename",
@@ -225,6 +250,11 @@ arda_files <- function(arda_id, ext = NULL) {
 #' @param file_guid Optional specific 5-character OSF file GUID (e.g., `"8nc9b"`).
 #' @param filename_pattern Optional regex to select a specific file when a dataset has multiple
 #'   files of the same format (e.g., `"County"` or `"Wave1"`).
+#' @param clean_names Logical; if `TRUE`, converts all variable names to lowercase
+#'   `snake_case` while preserving `haven` variable and value labels. Defaults to `FALSE`.
+#' @param as_factor Logical; if `TRUE`, converts `haven_labelled` variables (from `.sav`,
+#'   `.por`, or `.dta` files) into standard R factors using `haven::as_factor()`.
+#'   Defaults to `FALSE`.
 #' @param cache_dir Directory to store downloaded files. Defaults to `arda_cache_dir()`.
 #' @param refresh Logical; if `TRUE`, forces a fresh download even if cached.
 #' @param download_only Logical; if `TRUE`, downloads the file and returns the local file path
@@ -235,12 +265,14 @@ arda_load <- function(arda_id = NULL,
                       format = c("sav", "dta", "por", "rds", "csv", "tsv", "xlsx"),
                       file_guid = NULL,
                       filename_pattern = NULL,
+                      clean_names = FALSE,
+                      as_factor = FALSE,
                       cache_dir = arda_cache_dir(),
                       refresh = FALSE,
                       download_only = FALSE) {
   cat_df <- get_file_catalog() |>
     dplyr::mutate(Extension = tolower(tools::file_ext(.data$Original_Filename)))
-
+  
   if (!is.null(file_guid)) {
     matches <- dplyr::filter(cat_df, tolower(.data$File_GUID) == tolower(file_guid))
   } else if (!is.null(arda_id)) {
@@ -262,11 +294,11 @@ arda_load <- function(arda_id = NULL,
   } else {
     stop("Supply either `arda_id` or `file_guid`.", call. = FALSE)
   }
-
+  
   if (nrow(matches) == 0) {
     stop("No matching file found in the ARDA-OSF catalog.", call. = FALSE)
   }
-
+  
   target <- matches[1, ]
   if (nrow(matches) > 1 && is.null(file_guid)) {
     message(sprintf(
@@ -274,10 +306,10 @@ arda_load <- function(arda_id = NULL,
       nrow(matches), target$Original_Filename, target$File_GUID, target$ARDA_ID
     ))
   }
-
+  
   dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
   dest_path <- file.path(cache_dir, target$Standardized_Filename)
-
+  
   if (!file.exists(dest_path) || isTRUE(refresh)) {
     message(sprintf("Downloading %s (%s) from OSF...", target$Standardized_Filename, target$File_GUID))
     req <- httr2::request(target$Download_URL) |>
@@ -287,13 +319,13 @@ arda_load <- function(arda_id = NULL,
   } else {
     message(sprintf("Loading cached file: %s", dest_path))
   }
-
+  
   if (isTRUE(download_only)) {
     return(dest_path)
   }
-
+  
   ext <- target$Extension
-  switch(
+  df <- switch(
     ext,
     "sav"  = haven::read_sav(dest_path),
     "zsav" = haven::read_sav(dest_path),
@@ -316,7 +348,18 @@ arda_load <- function(arda_id = NULL,
     },
     {
       message(sprintf("Format '.%s' is non-tabular; returning local file path.", ext))
-      dest_path
+      return(dest_path)
     }
   )
+  
+  if (is.data.frame(df)) {
+    if (isTRUE(as_factor)) {
+      df <- haven::as_factor(df)
+    }
+    if (isTRUE(clean_names)) {
+      df <- clean_df_names(df)
+    }
+  }
+  
+  df
 }
