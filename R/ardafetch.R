@@ -363,3 +363,102 @@ arda_load <- function(arda_id = NULL,
   
   df
 }
+
+#' Extract a Searchable Codebook from a Loaded ARDA Dataset
+#'
+#' Inspects a data frame or tibble loaded via `arda_load()` and extracts variable
+#' names, storage types, question text (`label` attributes), value labels (or factor
+#' levels), and missing value counts/percentages.
+#'
+#' @param df A data frame or tibble returned by `arda_load()`.
+#' @param query Optional search string (case-insensitive regex) to filter variables
+#'   by variable name, question text (`label`), or value labels.
+#' @param max_values Maximum number of value labels/levels to display per variable
+#'   before truncating with `"..."` (default `15`). Set to `Inf` to show all.
+#' @return A tibble with columns `pos`, `variable`, `type`, `label`, `value_labels`,
+#'   `n_unique`, `n_missing`, and `pct_missing`.
+#' @export
+arda_codebook <- function(df, query = NULL, max_values = 15) {
+  if (!is.data.frame(df)) {
+    stop("`df` must be a data frame or tibble.", call. = FALSE)
+  }
+  
+  n_rows <- nrow(df)
+  vars <- names(df)
+  
+  rows <- lapply(seq_along(df), function(i) {
+    col <- df[[i]]
+    var_name <- vars[i]
+    
+    # 1. Question text / variable label
+    var_label <- attr(col, "label", exact = TRUE)
+    if (is.null(var_label) || length(var_label) == 0 || !nzchar(as.character(var_label[1]))) {
+      var_label <- NA_character_
+    } else {
+      var_label <- as.character(var_label[1])
+    }
+    
+    # 2. Variable class/type
+    col_type <- if (inherits(col, "haven_labelled")) {
+      paste0("labelled (", typeof(col), ")")
+    } else if (is.factor(col)) {
+      if (is.ordered(col)) "ordered factor" else "factor"
+    } else {
+      class(col)[1]
+    }
+    
+    # 3. Value labels (haven_labelled) or factor levels
+    val_labs <- attr(col, "labels", exact = TRUE)
+    if (!is.null(val_labs) && length(val_labs) > 0) {
+      lab_names <- names(val_labs) %||% rep("", length(val_labs))
+      formatted <- ifelse(
+        nzchar(lab_names),
+        paste0(unname(val_labs), " = ", lab_names),
+        as.character(unname(val_labs))
+      )
+      if (length(formatted) > max_values) {
+        formatted <- c(formatted[seq_len(max_values)], sprintf("... (+%d more)", length(formatted) - max_values))
+      }
+      val_str <- paste(formatted, collapse = "; ")
+    } else if (is.factor(col)) {
+      lvls <- levels(col)
+      if (length(lvls) > max_values) {
+        lvls <- c(lvls[seq_len(max_values)], sprintf("... (+%d more)", length(lvls) - max_values))
+      }
+      val_str <- paste(lvls, collapse = "; ")
+    } else {
+      val_str <- NA_character_
+    }
+    
+    # 4. Missingness & unique non-missing values
+    is_miss <- is.na(col)
+    n_miss <- sum(is_miss)
+    pct_miss <- if (n_rows > 0) round((n_miss / n_rows) * 100, 1) else NA_real_
+    n_uniq <- length(unique(col[!is_miss]))
+    
+    tibble::tibble(
+      pos = i,
+      variable = var_name,
+      type = col_type,
+      label = var_label,
+      value_labels = val_str,
+      n_unique = n_uniq,
+      n_missing = n_miss,
+      pct_missing = pct_miss
+    )
+  })
+  
+  cb <- dplyr::bind_rows(rows)
+  
+  if (!is.null(query) && nzchar(query)) {
+    rx <- stringr::regex(query, ignore_case = TRUE)
+    cb <- dplyr::filter(
+      cb,
+      stringr::str_detect(.data$variable, rx) |
+        stringr::str_detect(dplyr::coalesce(.data$label, ""), rx) |
+        stringr::str_detect(dplyr::coalesce(.data$value_labels, ""), rx)
+    )
+  }
+  
+  cb
+}
