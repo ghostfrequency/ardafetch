@@ -1,0 +1,21 @@
+Package: ardafetch
+Type: Package
+Title: Search, Download, and Load Datasets from the Association of Religion Data Archives (ARDA)
+Version: 0.1.0
+Authors@R: person("ARDA", "User", email = "user@example.com", role = c("aut", "cre"))
+Description: Provides tools to search the ARDA catalog, download dataset files hosted on OSF
+    with local caching, and load statistical files (.sav, .por, .dta, .csv, .tsv, .rds, .xlsx)
+    directly into R.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+Imports:
+    dplyr,
+    haven,
+    httr2,
+    readr,
+    stringr,
+    tibble,
+    tools
+Suggests:
+    readxl
