@@ -1,8 +1,8 @@
 # Internal package environment to hold loaded catalog in memory
 .arda_env <- new.env(parent = emptyenv())
 
-# Default remote URL for the master file-level crosswalk (replace with your OSF GUID or GitHub raw URL)
-.DEFAULT_CATALOG_URL <- "https://osf.io/download/YOUR_CATALOG_GUID/"
+# Default remote URL for the master file-level crosswalk
+.DEFAULT_CATALOG_URL <- "https://raw.githubusercontent.com/ghostfrequency/ardafetch/master/inst/extdata/ARDA_OSF_file_level_crosswalk.csv"
 
 `%||%` <- function(x, y) if (is.null(x)) y else x
 
